@@ -1,0 +1,528 @@
+Developer: Developer: # Project Title
+- CPU Design and Simulation Project  class CPSC440
+
+# Role and Objective
+- Serve as a Python developer working on the 'CPU Design and Simulation Project' using modern Python tooling and best practices.
+- **Programming language:** Python (already installed).
+- **Manages virtual environments:** Poetry (already installed).
+- **Package installer for Python:** Poetry.
+- **Operating System:** Windows 11.
+- **Framework:** LangChain, LangGraph.
+
+# Initial Checklist
+- Begin each task with a concise checklist (3-7 bullets) of conceptual sub-tasks to ensure all steps and requirements are addressed.
+
+# Instructions
+- Use Visual Studio Code on Windows 11 to develop in Python.
+- Manage packages and virtual environments with Poetry.
+- Implement a meaningful subset of 32-bit RISC-V ISA.
+- Employ Git and GitHub for version control.
+- Use Sphinx for documentation generation.
+- **Check my code for errors and suggest improvements.**
+
+## Coding and Commenting Guidelines
+- Write code like a High School Student would.
+- When adding new lines of code, annotate with `# Added Code` at the end of the line.
+- If a line is both added and modified, use only `#  Changed Code` at the end of the line.
+- Do **not** comment on command-line instructions.
+- Provide complete code context when submitting changes.
+- When editing code:
+  1. Clearly state any relevant assumptions.
+  2. If feasible, create or execute minimal tests to verify changes, and validate results in 1-2 lines (proceed or self-correct as needed).
+  3. Provide review-ready diffs.
+  4. Follow the established project style conventions.
+- **Only annotate a line with `#  Changed Code` if the line is different from the original; do not add `#  Changed Code` when the line remains unchanged.**
+
+# Context
+- **Project Directory:** C:/Users/Me/Documents/Python/CPSC440/Projects/rv32i_440
+- **GitHub Repository:** https://github.com/Devilfish281/rv32i_440.git
+- All required programs and libraries (Python, Tkinter, Poetry, Git) are already installed.
+
+# Output Format
+- Default to plain text output unless Markdown is specifically required.
+- When using Markdown for code, employ fenced code blocks with correct language tags (e.g., ```python).
+- File, directory, function, and class names should appear in backticks if referenced.
+- Escape math notation if present.
+
+# Verbosity
+- Use concise summaries for general output.
+- For code, prioritize high verbosity: use descriptive names, clear logic, and meaningful comments.
+
+# Reasoning Effort
+- Set reasoning_effort according to task complexity (minimal for simple, medium/high for complex tasks); tool interactions and code edits should be terse, final outputs more complete as needed.
+
+# Stop Conditions
+- Tasks are complete when all success criteria and instructions have been addressed.
+- In cases of uncertainty, proceed with the most logical approach and document any relevant assumptions.
+- Only finish when the user's specification and project conventions are fully satisfied.
+
+********************************
+Check my code for errors and improvements.
+
+
+
+The File structure for my program is BELOW:
+└── C:\Users\Me\Documents\Python\CPSC440\Projects\rv32i_440/
+    ├── .gitignore
+    ├── Makefile
+    ├── README.md
+    ├── make.bat
+    ├── poetry.lock
+    └── pyproject.toml
+    └── src/
+        ├── rv32i_440/
+        │   ├── __init__.py
+        │   └── rv32i_440.py
+        └── utilities/
+            ├── __init__.py
+            ├── load_env.py
+            └── logger_setup.py
+
+########################################
+Here is my code for __init__.py BELOW:
+########################################
+
+```python
+```
+
+########################################
+Here is my code for rv32i_440.py BELOW:
+########################################
+
+```python
+# rv32i_440.py
+"""
+Tiny RV32I teaching core with structured logging.
+
+Sphinx:
+    This module is prepared for Sphinx autodoc; the header note helps Sphinx
+    index the file when using the autodoc extension.
+"""
+
+import logging
+
+from utilities.logger_setup import setup_logger
+
+MASK32 = 0xFFFF_FFFF
+
+
+def u32(x):
+    """
+    Zero-extend an integer to 32 bits (wrap around like a 32-bit register).
+
+    :param int x: Input integer.
+    :return: x modulo 2^32.
+    :rtype: int
+    """
+    return x & MASK32
+
+
+def get_bits(x, hi, lo):
+    """
+    Extract a bit slice [hi:lo] (inclusive) from an integer.
+
+    :param int x: Source integer.
+    :param int hi: High bit index (0-based, inclusive).
+    :param int lo: Low bit index (0-based, inclusive).
+    :return: The extracted bitfield as a non-negative integer.
+    :rtype: int
+    """
+    return (x >> lo) & ((1 << (hi - lo + 1)) - 1)
+
+
+def sext(val, bits):
+    """
+    Sign-extend a value that is `bits` wide to Python int.
+
+    :param int val: Raw (possibly wider) integer value.
+    :param int bits: Bit width of the value to interpret.
+    :return: Sign-extended integer.
+    :rtype: int
+    """
+    sign = 1 << (bits - 1)
+    val &= (1 << bits) - 1
+    return val - (1 << bits) if (val & sign) else val
+
+
+def imm_i(instr):
+    """
+    Decode I-type immediate (bits [31:20], sign-extended).
+
+    :param int instr: 32-bit instruction word.
+    :return: Sign-extended 12-bit immediate.
+    :rtype: int
+    """
+    return sext(get_bits(instr, 31, 20), 12)
+
+
+def imm_s(instr):
+    """
+    Decode S-type immediate from bits [31:25] and [11:7], sign-extended.
+
+    :param int instr: 32-bit instruction word.
+    :return: Sign-extended 12-bit immediate.
+    :rtype: int
+    """
+    raw = (get_bits(instr, 31, 25) << 5) | get_bits(instr, 11, 7)
+    return sext(raw, 12)
+
+
+def imm_b(instr):
+    """
+    Decode B-type branch immediate (assembled from scattered fields), sign-extended.
+
+    :param int instr: 32-bit instruction word.
+    :return: Sign-extended 13-bit branch offset (byte addressing).
+    :rtype: int
+    """
+    raw = (
+        (get_bits(instr, 31, 31) << 12)
+        | (get_bits(instr, 30, 25) << 5)
+        | (get_bits(instr, 11, 8) << 1)
+        | (get_bits(instr, 7, 7) << 11)
+    )
+    return sext(raw, 13)
+
+
+def imm_j(instr):
+    """
+    Decode J-type jump immediate (assembled from scattered fields), sign-extended.
+
+    :param int instr: 32-bit instruction word.
+    :return: Sign-extended 21-bit jump offset (byte addressing).
+    :rtype: int
+    """
+    raw = (
+        (get_bits(instr, 31, 31) << 20)
+        | (get_bits(instr, 30, 21) << 1)
+        | (get_bits(instr, 20, 20) << 11)
+        | (get_bits(instr, 19, 12) << 12)
+    )
+    return sext(raw, 21)
+
+
+def imm_u(instr):
+    """U-type immediate: bits[31:12] << 12 (no sign-extension).
+
+    :param int instr: 32-bit instruction word.
+    :return: Upper 20 bits shifted into position as a 32-bit value.
+    :rtype: int
+    """
+    return get_bits(instr, 31, 12) << 12
+
+
+class TinyCPU:
+    """
+    Minimal RV32I teaching CPU.
+
+    Features:
+        - 32 integer registers (x0 hard-wired to 0)
+        - PC, instruction memory (imem), data memory (dmem)
+        - Small subset of RV32I: ADDI, ADD, SUB, LW, SW, BEQ, JAL, LUI
+        - Structured logging for fetch/decode/execute steps
+
+    Usage:
+        Instantiate, load program with :meth:`load_hex_lines`, then run with :meth:`run`.
+    """
+
+    def __init__(self):
+        """
+        Initialize CPU state.
+
+        :ivar list[int] x: Register file (32 x 32-bit).
+        :ivar int pc: Program counter (byte address).
+        :ivar dict[int,int] imem: Instruction memory map (addr -> word).
+        :ivar dict[int,int] dmem: Data memory map (addr -> word).
+        :ivar list[tuple[int,int]] trace: Execution trace (pc, instr).
+        :ivar logging.Logger logger: Module/class logger.
+        """
+        self.x = [0] * 32
+        self.pc = 0
+        self.imem = {}
+        self.dmem = {}
+        self.trace = []
+        self.logger = logging.getLogger(__name__)
+
+    def load_hex_lines(self, lines, base_pc=0):
+        """
+        Load a sequence of 8-hex-digit strings into instruction memory.
+
+        Each non-empty, non-comment line is parsed as a 32-bit instruction
+        and stored at addresses base_pc, base_pc+4, ...
+
+        :param list[str] lines: Lines of hex words (e.g., ``"0000006F"``).
+        :param int base_pc: Start address for the first instruction.
+        :return: None
+        :rtype: None
+        """
+        a = base_pc
+        for line in lines:
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            self.imem[a] = int(s, 16)
+            self.logger.debug("IMEM[0x%08X] <- 0x%08X", a, self.imem[a])
+            a += 4
+
+    def fetch(self):
+        """
+        Fetch the 32-bit instruction at the current PC.
+
+        :return: The instruction word (0 if address unmapped).
+        :rtype: int
+        """
+        instr = self.imem.get(self.pc, 0)
+        self.logger.debug("FETCH pc=0x%08X instr=0x%08X", self.pc, instr)
+        return instr
+
+    def step(self):
+        """
+        Execute one instruction at the current PC.
+
+        Decodes the instruction, executes it (if supported), advances the PC,
+        and appends (pc, instr) to the execution trace.
+
+        :return: ``True`` if CPU should continue; ``False`` if halted.
+        :rtype: bool
+        :raises ValueError: On unaligned LW/SW access.
+        """
+        instr = self.fetch()
+        opcode = instr & 0x7F
+        rd = get_bits(instr, 11, 7)
+        funct3 = get_bits(instr, 14, 12)
+        rs1 = get_bits(instr, 19, 15)
+        rs2 = get_bits(instr, 24, 20)
+        funct7 = get_bits(instr, 31, 25)
+        next_pc = u32(self.pc + 4)
+
+        def X(i):
+            """
+            Read a register (x0 is always 0).
+
+            :param int i: Register index (0..31).
+            :return: Register value (32-bit).
+            :rtype: int
+            """
+            return self.x[i] if i != 0 else 0
+
+        def WR(v):
+            """
+            Write-back to destination register `rd` if rd != 0.
+
+            :param int v: Value to write (will be masked to 32-bit).
+            :return: None
+            :rtype: None
+            """
+            if rd != 0:
+                self.x[rd] = u32(v)
+                self.logger.debug("x%02d <- 0x%08X", rd, self.x[rd])
+
+        handled = False
+
+        if opcode == 0x13:
+            if funct3 == 0x0:
+                self.logger.debug("ADDI x%d, x%d, %d", rd, rs1, imm_i(instr))
+                WR(X(rs1) + imm_i(instr))
+                handled = True
+
+        elif opcode == 0x33:
+            if funct3 == 0x0 and funct7 == 0x00:
+                self.logger.debug("ADD x%d, x%d, x%d", rd, rs1, rs2)
+                WR(X(rs1) + X(rs2))
+                handled = True
+            elif funct3 == 0x0 and funct7 == 0x20:
+                self.logger.debug("SUB x%d, x%d, x%d", rd, rs1, rs2)
+                WR(X(rs1) - X(rs2))
+                handled = True
+
+        elif opcode == 0x03:
+            if funct3 == 0x2:
+                addr = u32(X(rs1) + imm_i(instr))
+                self.logger.debug(
+                    "LW x%d, %d(x%d) -> addr=0x%08X", rd, imm_i(instr), rs1, addr
+                )
+                if addr % 4 != 0:
+                    raise ValueError("Unaligned LW")
+                WR(self.dmem.get(addr, 0))
+                handled = True
+
+        elif opcode == 0x23:
+            if funct3 == 0x2:
+                addr = u32(X(rs1) + imm_s(instr))
+                self.logger.debug(
+                    "SW x%d -> %d(x%d) addr=0x%08X", rs2, imm_s(instr), rs1, addr
+                )
+                if addr % 4 != 0:
+                    raise ValueError("Unaligned SW")
+                self.dmem[addr] = u32(X(rs2))
+                handled = True
+
+        elif opcode == 0x63:
+            if funct3 == 0x0:
+                self.logger.debug("BEQ x%d, x%d, offset=%d", rs1, rs2, imm_b(instr))
+                if X(rs1) == X(rs2):
+                    next_pc = u32(self.pc + imm_b(instr))
+                handled = True
+
+        elif opcode == 0x6F:
+            self.logger.debug("JAL x%d, offset=%d", rd, imm_j(instr))
+            WR(self.pc + 4)
+            next_pc = u32(self.pc + imm_j(instr))
+            handled = True
+
+        elif opcode == 0x37:
+            self.logger.debug("LUI x%d, 0x%05X", rd, get_bits(instr, 31, 12))
+            WR(imm_u(instr))
+            handled = True
+
+        self.x[0] = 0
+
+        if instr == 0x0000006F:
+            self.pc = next_pc
+            return False
+
+        if not handled:
+            self.logger.warning(
+                "Unsupported/unknown opcode 0x%02X at pc=0x%08X (instr=0x%08X)",
+                opcode,
+                self.pc,
+                instr,
+            )
+
+        self.trace.append((self.pc, instr))
+        self.pc = next_pc
+        return True
+
+    def run(self, max_steps=10_000):
+        """
+        Run the CPU for up to `max_steps` instructions or until halted.
+
+        :param int max_steps: Safety cap on the number of executed steps.
+        :return: Number of executed steps.
+        :rtype: int
+        """
+        steps = 0
+        while steps < max_steps and self.step():
+            steps += 1
+        return steps
+
+
+if __name__ == "__main__":
+    setup_logger()
+    logger = logging.getLogger(__name__)
+
+    program = [
+        "00500093",
+        "00A00113",
+        "002081B3",
+        "40110233",
+        "000102B7",
+        "0032A023",
+        "0002A203",
+        "00418463",
+        "00100313",
+        "00200313",
+        "0000006F",
+    ]
+
+    cpu = TinyCPU()
+    cpu.load_hex_lines(program, base_pc=0)
+    steps = cpu.run()
+
+    logger.info("Steps: %d", steps)
+    logger.info("PC:   0x%08X", cpu.pc)
+    for i in [1, 2, 3, 4, 5, 6]:
+        v = cpu.x[i]
+        s = v if v < 0x8000_0000 else v - (1 << 32)
+        logger.info("x%02d = 0x%08X (%d)", i, v, s)
+
+    addr = 0x00010000
+    mv = cpu.dmem.get(addr, 0)
+    logger.info("mem[0x%08X] = 0x%08X (%d)", addr, mv, mv)```
+
+########################################
+Here is my code for __init__.py BELOW:
+########################################
+
+```python
+```
+
+########################################
+Here is my code for load_env.py BELOW:
+########################################
+
+```python
+# utilities/load_env.py
+
+import logging
+import os
+import re
+from pathlib import Path
+from typing import Optional
+
+from dotenv import find_dotenv, load_dotenv
+
+logger = logging.getLogger(__name__)
+
+
+def _validate_api_key(key: str) -> bool:
+    """
+    Conservative validation for the OpenAI API key:
+    - must be at least 20 characters (adjust to your provider's expected length)
+    - contains at least one alphanumeric character
+    """
+    if not key:
+        return False
+    if len(key) < 20:
+        return False
+    if not re.search(r"[A-Za-z0-9]", key):
+        return False
+    return True
+
+
+def load_environment() -> None:
+    """
+    Load environment variables from .env (if present) and validate required vars.
+    Raises ValueError on missing/invalid critical variables.
+    """
+    logger.info("Loading environment variables.")
+
+    env_path = find_dotenv()
+    if env_path:
+        load_dotenv(env_path, override=False)
+        logger.debug("Loaded .env from %s", env_path)
+    else:
+        logger.debug(
+            ".env file not found; continuing with existing environment variables"
+        )
+
+    apikey = os.getenv("OPENAI_API_KEY")
+    if not _validate_api_key(apikey or ""):
+        logger.error("OPENAI_API_KEY is missing or invalid")
+        raise ValueError("OPENAI_API_KEY environment variable missing or invalid")
+
+    logger.info("API Key loaded successfully.")```
+
+########################################
+Here is my code for logger_setup.py BELOW:
+########################################
+
+```python
+# utilities/logger_setup.py
+
+import logging
+
+
+
+def setup_logger():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s:%(lineno)d %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(
+                "app.log", mode="a", encoding="utf-8"
+            ),
+        ],
+    )
+    return logging.getLogger(__name__)```
