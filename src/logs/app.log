@@ -580,3 +580,17 @@
 2025-11-14 00:07:32,063 INFO  __main__:437 | x05 = 0x00010000 (65536)
 2025-11-14 00:07:32,064 INFO  __main__:437 | x06 = 0x00000002 (2)
 2025-11-14 00:07:32,064 INFO  __main__:441 | mem[0x00010000] = 0x0000000F (15)
+2025-11-14 01:05:54,626 INFO  utilities.load_env:50 | Loading environment variables.
+2025-11-14 01:05:54,627 INFO  utilities.load_env:66 | REGISTER_DUMP is set to True
+2025-11-14 01:05:54,627 INFO  utilities.load_env:67 | Environment variables loaded successfully.
+2025-11-14 01:05:54,627 INFO  __main__:599 | Starting TinyRV32I CPU
+2025-11-14 01:05:54,628 WARNING __main__:640 | Program file prog.hex not found; running built-in demo
+2025-11-14 01:05:54,628 INFO  __main__:579 | Steps: 9
+2025-11-14 01:05:54,628 INFO  __main__:580 | PC:   0x00000028
+2025-11-14 01:05:54,629 INFO  __main__:584 | x01 = 0x00000005 (5)
+2025-11-14 01:05:54,629 INFO  __main__:584 | x02 = 0x0000000A (10)
+2025-11-14 01:05:54,629 INFO  __main__:584 | x03 = 0x0000000F (15)
+2025-11-14 01:05:54,629 INFO  __main__:584 | x04 = 0x0000000F (15)
+2025-11-14 01:05:54,630 INFO  __main__:584 | x05 = 0x00010000 (65536)
+2025-11-14 01:05:54,630 INFO  __main__:584 | x06 = 0x00000002 (2)
+2025-11-14 01:05:54,630 INFO  __main__:588 | mem[0x00010000] = 0x0000000F (15)
