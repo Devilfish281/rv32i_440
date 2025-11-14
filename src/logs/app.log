@@ -567,3 +567,16 @@
 2025-09-24 23:19:54,029 INFO  __main__:438 | x05 = 0x00010000 (65536)
 2025-09-24 23:19:57,061 INFO  __main__:438 | x06 = 0x00000002 (2)
 2025-09-24 23:20:40,555 INFO  __main__:442 | mem[0x00010000] = 0x0000000F (15)
+2025-11-14 00:07:32,061 INFO  utilities.load_env:50 | Loading environment variables.
+2025-11-14 00:07:32,061 INFO  utilities.load_env:66 | REGISTER_DUMP is set to True
+2025-11-14 00:07:32,062 INFO  utilities.load_env:67 | Environment variables loaded successfully.
+2025-11-14 00:07:32,062 INFO  __main__:395 | Starting TinyRV32I CPU
+2025-11-14 00:07:32,062 INFO  __main__:432 | Steps: 10
+2025-11-14 00:07:32,062 INFO  __main__:433 | PC:   0x0000002C
+2025-11-14 00:07:32,063 INFO  __main__:437 | x01 = 0x00000005 (5)
+2025-11-14 00:07:32,063 INFO  __main__:437 | x02 = 0x0000000A (10)
+2025-11-14 00:07:32,063 INFO  __main__:437 | x03 = 0x0000000F (15)
+2025-11-14 00:07:32,063 INFO  __main__:437 | x04 = 0x0000000F (15)
+2025-11-14 00:07:32,063 INFO  __main__:437 | x05 = 0x00010000 (65536)
+2025-11-14 00:07:32,064 INFO  __main__:437 | x06 = 0x00000002 (2)
+2025-11-14 00:07:32,064 INFO  __main__:441 | mem[0x00010000] = 0x0000000F (15)
