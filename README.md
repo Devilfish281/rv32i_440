@@ -312,9 +312,16 @@ Planned tests:
   - Assert final register and memory values match the expected behavior.
 
 Once tests are in place, they will be runnable with:
+Run all tests:
 
 ```bash
 poetry run pytest -q
+```
+
+Run only the unit tests folder:
+
+```bash
+poetry run pytest -q tests/unit
 ```
 
 ---
