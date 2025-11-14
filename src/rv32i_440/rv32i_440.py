@@ -9,8 +9,22 @@ Sphinx:
 
 import logging
 import os
-from ast import If
+import sys
 
+from midterm_440.numeric_core.interfaces import (
+    add_bits,
+    bits_to_u32,
+    decode_twos_complement,
+    div_restoring,
+    encode_twos_complement,
+    mul_shift_add,
+    sll_bits,
+    sra_bits,
+    srl_bits,
+    sub_bits,
+    u32_to_bits,
+)
+from rv32i_440.alu_adapter import alu_exec
 from utilities.load_env import (
     is_register_dump_enabled,
     load_environment,
@@ -19,6 +33,59 @@ from utilities.load_env import (
 from utilities.logger_setup import setup_logger
 
 MASK32 = 0xFFFF_FFFF
+
+
+def _shift_helper(kind: str, value: int, shamt: int) -> int:
+    """Use bit-level shifter from numeric_core for one instruction."""
+    bits = u32_to_bits(value & MASK32)
+    if kind == "SLL":
+        out_bits = sll_bits(bits, shamt)
+    elif kind == "SRL":
+        out_bits = srl_bits(bits, shamt)
+    elif kind == "SRA":
+        out_bits = sra_bits(bits, shamt)
+    else:
+        raise ValueError(f"Unknown shift kind: {kind}")
+    return bits_to_u32(out_bits) & MASK32
+
+
+def _mdu_exec(op: str, rs1: int, rs2: int, *, trace: bool = False) -> dict:
+    """Small adapter for MUL/DIV/REM ops using numeric_core.mdu."""
+    rs1_u = rs1 & MASK32
+    rs2_u = rs2 & MASK32
+    a_bits = u32_to_bits(rs1_u)
+    b_bits = u32_to_bits(rs2_u)
+    if op == "MUL":
+        core_out = mul_shift_add(a_bits, b_bits, trace=trace)
+        rd_bits = core_out["rd_bits"]
+        rd_u = bits_to_u32(rd_bits) & MASK32
+        return {
+            "rd": rd_u,
+            "flags": {"overflow": int(core_out.get("overflow", 0))},
+            "trace": core_out.get("trace", []),
+        }
+    elif op in ("DIV", "DIVU", "REM", "REMU"):
+        signed = op in ("DIV", "REM")
+        core_out = div_restoring(a_bits, b_bits, signed=signed, trace=trace)
+        q_bits = core_out["q_bits"]
+        r_bits = core_out["r_bits"]
+        if op in ("DIV", "DIVU"):
+            rd_bits = q_bits
+        else:
+            rd_bits = r_bits
+        rd_u = bits_to_u32(rd_bits) & MASK32
+        flags = core_out.get("flags", {})
+        flags = {
+            "div_by_zero": int(flags.get("div_by_zero", 0)),
+            "overflow": int(flags.get("overflow", 0)),
+        }
+        return {
+            "rd": rd_u,
+            "flags": flags,
+            "trace": core_out.get("trace", []),
+        }
+    else:
+        raise ValueError(f"Unsupported MDU op: {op!r}")
 
 
 def u32(x):
@@ -190,6 +257,13 @@ class TinyCPU:
             self.logger.debug("IMEM[0x%08X] <- 0x%08X", a, self.imem[a])
             a += 4
 
+    def load_hex_file(self, path: str, base_pc: int = 0) -> None:
+        """Load a prog.hex-style file from disk into instruction memory."""
+        self.logger.info("Loading program from %s", path)
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        self.load_hex_lines(lines, base_pc=base_pc)
+
     def fetch(self):
         """
         Fetch the 32-bit instruction at the current PC.
@@ -245,7 +319,6 @@ class TinyCPU:
 
         handled = False
 
-        # I-type: ADDI
         if opcode == 0x13:
             if funct3 == 0x0:
                 self.logger.debug("ADDI x%d, x%d, %d", rd, rs1, imm_i(instr))
@@ -253,38 +326,161 @@ class TinyCPU:
                 WR(X(rs1) + imm_i(instr))
                 self.regs_dump("after ADDI")
                 handled = True
+            elif funct3 == 0x1:
+                shamt = get_bits(instr, 24, 20)
+                self.logger.debug("SLLI x%d, x%d, %d", rd, rs1, shamt)
+                self.regs_dump("before SLLI")
+                res = _shift_helper("SLL", X(rs1), shamt)
+                WR(res)
+                self.regs_dump("after SLLI")
+                handled = True
+            elif funct3 == 0x5:
+                shamt = get_bits(instr, 24, 20)
+                if funct7 == 0x00:
+                    self.logger.debug("SRLI x%d, x%d, %d", rd, rs1, shamt)
+                    self.regs_dump("before SRLI")
+                    res = _shift_helper("SRL", X(rs1), shamt)
+                    WR(res)
+                    self.regs_dump("after SRLI")
+                    handled = True
+                elif funct7 == 0x20:
+                    self.logger.debug("SRAI x%d, x%d, %d", rd, rs1, shamt)
+                    self.regs_dump("before SRAI")
+                    res = _shift_helper("SRA", X(rs1), shamt)
+                    WR(res)
+                    self.regs_dump("after SRAI")
+                    handled = True
+            elif funct3 == 0x4:  # XORI
+                imm = imm_i(instr)
+                self.logger.debug("XORI x%d, x%d, %d", rd, rs1, imm)
+                self.regs_dump("before XORI")
+                WR(X(rs1) ^ imm)
+                self.regs_dump("after XORI")
+                handled = True
+            elif funct3 == 0x6:  # ORI
+                imm = imm_i(instr)
+                self.logger.debug("ORI x%d, x%d, %d", rd, rs1, imm)
+                self.regs_dump("before ORI")
+                WR(X(rs1) | imm)
+                self.regs_dump("after ORI")
+                handled = True
+            elif funct3 == 0x7:  # ANDI
+                imm = imm_i(instr)
+                self.logger.debug("ANDI x%d, x%d, %d", rd, rs1, imm)
+                self.regs_dump("before ANDI")
+                WR(X(rs1) & imm)
+                self.regs_dump("after ANDI")
+                handled = True
 
-        # R-type: ADD/SUB
         elif opcode == 0x33:
-            if funct3 == 0x0 and funct7 == 0x00:
-                self.logger.debug("ADD x%d, x%d, x%d", rd, rs1, rs2)
-                self.regs_dump("before ADD")
-                WR(X(rs1) + X(rs2))
-                self.regs_dump("after ADD")
-                handled = True
-            elif funct3 == 0x0 and funct7 == 0x20:  # SUB
-                self.logger.debug("SUB x%d, x%d, x%d", rd, rs1, rs2)
-                self.regs_dump("before SUB")
-                WR(X(rs1) - X(rs2))
-                self.regs_dump("after SUB")
-                handled = True
+            if funct7 == 0x01:
+                if funct3 == 0x0:
+                    self.logger.debug("MUL x%d, x%d, x%d", rd, rs1, rs2)
+                    self.regs_dump("before MUL")
+                    mdu_out = _mdu_exec("MUL", X(rs1), X(rs2), trace=True)
+                    WR(mdu_out["rd"])
+                    self.logger.debug(
+                        "MUL overflow=%d",
+                        mdu_out["flags"].get("overflow", 0),
+                    )
+                    self.regs_dump("after MUL")
+                    handled = True
+                elif funct3 == 0x4:
+                    self.logger.debug("DIV x%d, x%d, x%d", rd, rs1, rs2)
+                    self.regs_dump("before DIV")
+                    mdu_out = _mdu_exec("DIV", X(rs1), X(rs2), trace=True)
+                    WR(mdu_out["rd"])
+                    self.logger.debug(
+                        "DIV flags: div_by_zero=%d overflow=%d",
+                        mdu_out["flags"].get("div_by_zero", 0),
+                        mdu_out["flags"].get("overflow", 0),
+                    )
+                    self.regs_dump("after DIV")
+                    handled = True
+                elif funct3 == 0x5:
+                    self.logger.debug("DIVU x%d, x%d, x%d", rd, rs1, rs2)
+                    self.regs_dump("before DIVU")
+                    mdu_out = _mdu_exec("DIVU", X(rs1), X(rs2), trace=True)
+                    WR(mdu_out["rd"])
+                    self.logger.debug(
+                        "DIVU flags: div_by_zero=%d overflow=%d",
+                        mdu_out["flags"].get("div_by_zero", 0),
+                        mdu_out["flags"].get("overflow", 0),
+                    )
+                    self.regs_dump("after DIVU")
+                    handled = True
+                elif funct3 == 0x6:
+                    self.logger.debug("REM x%d, x%d, x%d", rd, rs1, rs2)
+                    self.regs_dump("before REM")
+                    mdu_out = _mdu_exec("REM", X(rs1), X(rs2), trace=True)
+                    WR(mdu_out["rd"])
+                    self.logger.debug(
+                        "REM flags: div_by_zero=%d overflow=%d",
+                        mdu_out["flags"].get("div_by_zero", 0),
+                        mdu_out["flags"].get("overflow", 0),
+                    )
+                    self.regs_dump("after REM")
+                    handled = True
+                elif funct3 == 0x7:
+                    self.logger.debug("REMU x%d, x%d, x%d", rd, rs1, rs2)
+                    self.regs_dump("before REMU")
+                    mdu_out = _mdu_exec("REMU", X(rs1), X(rs2), trace=True)
+                    WR(mdu_out["rd"])
+                    self.logger.debug(
+                        "REMU flags: div_by_zero=%d overflow=%d",
+                        mdu_out["flags"].get("div_by_zero", 0),
+                        mdu_out["flags"].get("overflow", 0),
+                    )
+                    self.regs_dump("after REMU")
+                    handled = True
+            else:
+                if funct3 == 0x0 and funct7 == 0x00:
+                    self.logger.debug("ADD x%d, x%d, x%d", rd, rs1, rs2)
+                    self.regs_dump("before ADD")
+                    alu_out = alu_exec("ADD", X(rs1), X(rs2), trace=True)
+                    WR(alu_out["rd"])
+                    self.logger.debug(
+                        "ADD flags: N=%d Z=%d C=%d V=%d",
+                        alu_out["flags"]["N"],
+                        alu_out["flags"]["Z"],
+                        alu_out["flags"]["C"],
+                        alu_out["flags"]["V"],
+                    )
+                    self.regs_dump("after ADD")
+                    handled = True
+                elif funct3 == 0x0 and funct7 == 0x20:
+                    self.logger.debug("SUB x%d, x%d, x%d", rd, rs1, rs2)
+                    self.regs_dump("before SUB")
+                    alu_out = alu_exec("SUB", X(rs1), X(rs2), trace=True)
+                    WR(alu_out["rd"])
+                    self.logger.debug(
+                        "SUB flags: N=%d Z=%d C=%d V=%d",
+                        alu_out["flags"]["N"],
+                        alu_out["flags"]["Z"],
+                        alu_out["flags"]["C"],
+                        alu_out["flags"]["V"],
+                    )
+                    self.regs_dump("after SUB")
+                    handled = True
+                elif funct3 == 0x4 and funct7 == 0x00:
+                    self.logger.debug("XOR x%d, x%d, x%d", rd, rs1, rs2)
+                    self.regs_dump("before XOR")
+                    WR(X(rs1) ^ X(rs2))
+                    self.regs_dump("after XOR")
+                    handled = True
+                elif funct3 == 0x6 and funct7 == 0x00:
+                    self.logger.debug("OR x%d, x%d, x%d", rd, rs1, rs2)
+                    self.regs_dump("before OR")
+                    WR(X(rs1) | X(rs2))
+                    self.regs_dump("after OR")
+                    handled = True
+                elif funct3 == 0x7 and funct7 == 0x00:
+                    self.logger.debug("AND x%d, x%d, x%d", rd, rs1, rs2)
+                    self.regs_dump("before AND")
+                    WR(X(rs1) & X(rs2))
+                    self.regs_dump("after AND")
+                    handled = True
 
-        # Semantics: LW rd, imm(rs1)
-        # Read a 32-bit word from memory at address rs1 + imm and write it to register rd.
-        # Endianness: Little-endian (byte at lowest address is the least-significant byte of the word).
-        # Alignment: Architecturally requires naturally aligned addresses (address % 4 == 0). Do not assume alignment and raise an exception.
-
-        # Encoding (I-type)
-        # opcode: 0000011₂ (0x03)
-        # funct3: 010₂ (selects word)
-        # rd: destination register
-        # rs1: base register
-        # imm[11:0]: 12-bit signed immediate (sign-extended)
-
-        # Bit fields (31..0):
-        # imm[11:0] (31:20) | rs1 (19:15) | funct3=010 (14:12) | rd (11:7) | opcode=0000011 (6:0)
-
-        # Load: LW
         elif opcode == 0x03:
             if funct3 == 0x2:
                 addr = u32(X(rs1) + imm_i(instr))
@@ -297,12 +493,6 @@ class TinyCPU:
                 WR(self.dmem.get(addr, 0))
                 self.regs_dump("after LW")
                 handled = True
-        # SW (Store Word) in RV32IS
-        # Semantics: SW rs2, imm(rs1)
-        # Store the 32-bit value from register rs2 into memory at address rs1 + imm.
-        # Endianness: Little-endian (byte at lowest address is the least-significant byte of the word).
-        # Alignment: Architecturally requires naturally aligned addresses (address % 4 == 0). Do not assume alignment and raise an exception.
-        # Store: SW
         elif opcode == 0x23:
             if funct3 == 0x2:
                 addr = u32(X(rs1) + imm_s(instr))
@@ -314,11 +504,6 @@ class TinyCPU:
                 self.dmem[addr] = u32(X(rs2))
                 handled = True
 
-        # BEQ (Branch if Equal)
-        # Compare registers rs1 and rs2.
-        # If equal, branch to new PC = current PC + sign-extended offset.
-        # Otherwise, fall through: PC = PC + 4.
-        # Branch: BEQ
         elif opcode == 0x63:
             if funct3 == 0x0:
                 self.logger.debug("BEQ x%d, x%d, offset=%d", rs1, rs2, imm_b(instr))
@@ -326,19 +511,12 @@ class TinyCPU:
                     next_pc = u32(self.pc + imm_b(instr))
                 handled = True
 
-        # JAL (Jump and Link)
-        # Semantics: JAL rd, offset
-        # Write the return address (PC + 4) to register rd.
-        # Jump to the target address (PC + sign-extended offset).
-
-        # Jump: JAL
         elif opcode == 0x6F:
             self.logger.debug("JAL x%d, offset=%d", rd, imm_j(instr))
             WR(self.pc + 4)
             next_pc = u32(self.pc + imm_j(instr))
             handled = True
 
-        # Upper-immediate: LUI
         elif opcode == 0x37:
             self.logger.debug("LUI x%d, 0x%05X", rd, get_bits(instr, 31, 12))
             self.regs_dump("before LUI")
@@ -348,7 +526,6 @@ class TinyCPU:
 
         self.x[0] = 0
 
-        # Halt convention: JAL x0, 0
         if instr == 0x0000006F:
             self.pc = next_pc
             return False
@@ -379,17 +556,44 @@ class TinyCPU:
         return steps
 
 
+def _run_demo_program(logger: logging.Logger) -> None:
+    """Fallback: run the built-in demo program if no prog.hex is found."""
+    program = [
+        "00500093",
+        "00A00113",
+        "002081B3",
+        "40110233",
+        "000102B7",
+        "0032A023",
+        "0002A203",
+        "00418463",
+        "00100313",
+        "00200313",
+        "0000006F",
+    ]
+
+    cpu = TinyCPU()
+    cpu.load_hex_lines(program, base_pc=0)
+    steps = cpu.run()
+
+    logger.info("Steps: %d", steps)
+    logger.info("PC:   0x%08X", cpu.pc)
+    for i in [1, 2, 3, 4, 5, 6]:
+        v = cpu.x[i]
+        s = v if v < 0x8000_0000 else v - (1 << 32)
+        logger.info("x%02d = 0x%08X (%d)", i, v, s)
+
+    addr = 0x00010000
+    mv = cpu.dmem.get(addr, 0)
+    logger.info("mem[0x%08X] = 0x%08X (%d)", addr, mv, mv)
+
+
 if __name__ == "__main__":
 
-    # Option A: set via param
-    log_level = read_log_level()  # reads LOG_LEVEL env var
+    log_level = read_log_level()
     setup_logger(level=log_level)
 
-    # Load env (.env + real env) first so logging and flags are ready.  # Added Code
-    load_environment()  # Added Code
-
-    # Option B: set via environment variable (export LOG_LEVEL=DEBUG)
-    # setup_logger()  # reads LOG_LEVEL env var
+    load_environment()
 
     logger = logging.getLogger(__name__)
     logger.info("Starting TinyRV32I CPU")
@@ -409,33 +613,29 @@ if __name__ == "__main__":
     JAL x0,0 loops to itself; your simulator treats that as “halt” (common teaching convention; architecturally it's just a self-jump).
     Courses at UW
 
-    """
-    program = [
-        "00500093",  # ADDI x1, x0, 5  # x1 = 5
-        "00A00113",  # ADDI x2, x0, 10  # x2 = 10
-        "00A00113",  # ADDI x2, x0, 10  # x2 = 10
-        "002081B3",  # ADD x3, x1, x2  # x3 = x1 + x2 = 15
-        "40110233",  # SUB x4, x2, x1  # x4 = x2 − x1 = 5
-        "000102B7",  # LUI x5, 0x00010 # x5 = 0x00010000 (upper 20 bits << 12)
-        "0032A023",  # SW x3, 0(x5) # mem[0x00010000] = x3 (15)
-        "0002A203",  # LW x4, 0(x5) # x4 = mem[0x00010000] → 15
-        "00418463",  # BEQ x3, x4, 8 # if x3==x4, PC = PC + 8 (skip next instr)
-        "00100313",  # ADDI x6, x0, 1 # (will be skipped because BEQ taken)
-        "00200313",  # ADDI x6, x0, 2 # executed after the skip → x6 = 2
-        "0000006F",  # JAL x0, 0 # jump to self; in your core this is the halt convention
-    ]
+   """
 
-    cpu = TinyCPU()
-    cpu.load_hex_lines(program, base_pc=0)
-    steps = cpu.run()
+    if len(sys.argv) > 1:
+        prog_path = sys.argv[1]
+    else:
+        prog_path = "prog.hex"
 
-    logger.info("Steps: %d", steps)
-    logger.info("PC:   0x%08X", cpu.pc)
-    for i in [1, 2, 3, 4, 5, 6]:
-        v = cpu.x[i]
-        s = v if v < 0x8000_0000 else v - (1 << 32)
-        logger.info("x%02d = 0x%08X (%d)", i, v, s)
+    if os.path.exists(prog_path):
+        cpu = TinyCPU()
+        cpu.load_hex_file(prog_path, base_pc=0)
+        steps = cpu.run()
 
-    addr = 0x00010000
-    mv = cpu.dmem.get(addr, 0)
-    logger.info("mem[0x%08X] = 0x%08X (%d)", addr, mv, mv)
+        logger.info("Program file: %s", prog_path)
+        logger.info("Steps: %d", steps)
+        logger.info("PC:   0x%08X", cpu.pc)
+        for i in [1, 2, 3, 4, 5, 6]:
+            v = cpu.x[i]
+            s = v if v < 0x8000_0000 else v - (1 << 32)
+            logger.info("x%02d = 0x%08X (%d)", i, v, s)
+
+        addr = 0x00010000
+        mv = cpu.dmem.get(addr, 0)
+        logger.info("mem[0x%08X] = 0x%08X (%d)", addr, mv, mv)
+    else:
+        logger.warning("Program file %s not found; running built-in demo", prog_path)
+        _run_demo_program(logger)
