@@ -701,3 +701,173 @@ This repo follows the course expectations:
   - Reference features (e.g., “Wire MUL/DIV via numeric_core.mdu”).
 
 ---
+
+## 14. Commit History (GitHub Evidence)
+
+This project was developed over time using Git and GitHub. The full commit history is public and can be viewed here:
+
+- Main branch commits: https://github.com/Devilfish281/rv32i_440/commits/main
+
+Each commit shows:
+
+- **What changed** (files added/modified/removed)
+- **When it changed** (date/time)
+- **Why it changed** (commit message)
+
+For the grader, here is how to interpret the history in terms of project milestones:
+
+1. **Initial project setup**  
+   Early commits set up the Poetry project, basic folder structure under `src/`, logging framework, and the `TinyCPU` skeleton in `rv32i_440/rv32i_440.py`.
+
+2. **Instruction set and single-cycle CPU core**  
+   A sequence of commits adds RV32I instructions (e.g., ADDI/ADD/SUB, LW/SW, BEQ/BNE, JAL/JALR, LUI/AUIPC) and wires them into the `TinyCPU.step()` control logic.  
+   These commits show the gradual build-up of the single-cycle datapath and control unit.
+
+3. **Numeric core integration — **EXTRA CREDIT**  
+   Commits involving the `midterm_440.numeric_core` package (ALU, MDU, shifters, float32 helpers, two’s-complement tools) and the `rv32i_440/alu_adapter.py` file document how the CPU was connected to a **bit-level numeric core\*\*:
+
+   - `ADD`/`SUB` routed through the ripple-carry ALU
+   - `MUL/DIV/DIVU/REM/REMU` routed through the shift-add / restoring-division MDU
+   - Shift instructions using the bit-level shifter  
+     This goes beyond the minimum RV32I requirements and is intended as **extra credit** work.
+
+4. **Testing and regression safety**  
+   Commits under `tests/unit/` add or refine tests for:
+
+   - ALU (`test_alu.py`)
+   - Shifters (`test_shifter.py`)
+   - Multiply/divide unit (`test_mdu.py`)
+   - Bit utilities (`test_bits.py`)
+   - Two’s-complement helpers (`test_twos.py`)
+   - Float32 packing/unpacking and basic arithmetic (`test_fpu_f32.py`)  
+     These commits show that the numeric core and supporting code were verified with automated tests, not just “happy-path” examples.
+
+5. **Tracing, logging, and environment validation — **EXTRA CREDIT-STYLE POLISH\*\*  
+   Additional commits improve developer and grader experience by:
+   - Adding structured logging via `utilities/logger_setup.py`
+   - Using `.env` configuration and `REGISTER_DUMP` / `LOG_LEVEL` in `utilities/load_env.py`
+   - Enforcing safe behavior (e.g., errors for misaligned LW/SW, validation of env vars)  
+     These changes are not strictly required for a minimal CPU, but they make the project easier to debug, test, and grade, and they represent **extra effort** beyond the baseline.
+
+### How to view the history locally (optional)
+
+If you clone the repo, you can explore the same history on your own machine:
+
+```bash
+git clone https://github.com/Devilfish281/rv32i_440.git
+cd rv32i_440
+
+# Compact view of commits (top = most recent)
+git log --oneline --graph --decorate
+
+# Show which files changed in each commit
+git log --stat
+
+```
+
+## Block Diagram
+
+```plaintext
+
++------------------+
+|   TinyCPU        |  <--- 32-bit RISC-V CPU core
+|                  |
+|  +--------------+|
+|  |  PC (pc)     |  <--- Program Counter (byte address)
+|  +--------------+|
+|  |  Reg File    |  <--- 32 x 32-bit integer registers
+|  +--------------+|
+|  |  ALU         |  <--- Arithmetic Logic Unit
+|  +--------------+|
+|  |  MDU         |  <--- Multiply/Divide Unit
+|  +--------------+|
+|  |  IMEM        |  <--- Instruction Memory
+|  +--------------+|
+|  |  DMEM        |  <--- Data Memory
+|  +--------------+|
++------------------+
+
+Block diagram
+                +--------------------------------------+
+                |           Program Loader             |
+                |   - reads prog.hex from disk         |
+                |   - calls TinyCPU.load_hex_file()    |
+                +--------------------+-----------------+
+                                     |
+                                     v
+                          +----------+-----------+
+                          |      PC Register     |
+                          |   (byte address)     |
+                          +----------+-----------+
+                                     |
+                                     v
+                          +----------+-----------+
+                          |   Instruction Memory |
+                          |       (imem dict)    |
+                          +----------+-----------+
+                                     |
+                                     v
+                          +----------+-----------+
+                          |   Decode & Control   |
+                          | - opcode / funct3    |
+                          | - funct7, rs1, rs2   |
+                          | - immediate gen      |
+                          | - selects ALU/MDU    |
+                          |   shift, branch, etc |
+                          +----------+-----------+
+                                     |
+                                     v
+                        +------------+-------------+
+                        |      Register File       |
+                        |   x0..x31 (x[0..31])     |
+                        | - x0 hard-wired to 0     |
+                        +-------+----------+-------+
+                                |          |
+                          rs1 value   rs2 value
+                                |          |
+                                v          v
+                     +----------+----------+-------------------+
+                     |       Execute / Numeric Core            |
+                     |                                         |
+                     |  +--------------+    +----------------+ |
+                     |  |   ALU        |    | Shifter        | |
+                     |  | (ADD, SUB,   |    | SLL, SRL, SRA  | |
+                     |  |  XOR, OR, AND)    +----------------+ |
+                     |  +--------------+                        |
+                     |  +--------------+    +----------------+ |
+                     |  |   MDU        |    | FPU (f32)      | |
+                     |  | (MUL, DIV,   |    |  (smoke tests) | |
+                     |  |  DIVU, REM…) |    +----------------+ |
+                     |  +--------------+                        |
+                     |   (implemented in midterm_440.numeric_core)
+                     +----------+--------------------------------+
+                                |
+                                | ALU / MDU / shift result
+                                v
+                        +-------+-----------+
+                        |   Data Memory    |
+                        |     (dmem dict)  |
+                        | - LW / SW        |
+                        +-------+-----------+
+                                |
+                     load data  |  store data
+                                v
+                        +-------+-----------+
+                        |   Write-back      |
+                        | - writes rd≠0    |
+                        |   into x[rd]     |
+                        +-------+-----------+
+                                |
+                                v
+                        +-------+-----------+
+                        |   Next PC Logic   |
+                        | - PC+4 (normal)   |
+                        | - branches (BEQ)  |
+                        | - jumps (JAL)     |
+                        +-------+-----------+
+                                |
+                                v
+                          (back to PC)
+
+
+```
