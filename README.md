@@ -1,7 +1,7 @@
-````
+````markdown
 # rv32i-440 — Single-Cycle RV32I Teaching CPU (Python)
 
-CPSC 440: CPU Design and Simulation Project
+CPSC 440: CPU Design and Simulation Project  
 Author: Matthew Dobley
 
 ## Quickstart for the grader
@@ -17,12 +17,15 @@ poetry run python -m rv32i_440.rv32i_440 prog.hex
 ```
 ````
 
-This project is a simple 32-bit RISC-V CPU simulator that implements a subset of the RV32I base integer instruction set (plus RV32M arithmetic via a separate numeric core). The design models a **single-cycle CPU** in Python: each call to `step()` performs fetch → decode → execute → memory → write-back, and `run()` iterates until a halt.
+see log file `logs/app.log` for detailed execution trace.
+
+This project is a simple 32-bit RISC-V CPU simulator that implements a subset of the RV32I base integer instruction set (plus RV32M arithmetic via a separate numeric core **for extra-credit multiply/divide support**). The design models a **single-cycle CPU** in Python: each call to `step()` performs fetch → decode → execute → memory → write-back, and `run()` iterates until a halt.
 
 The goal is to give a clear, inspectable reference model for the CPSC 440 project while matching the course requirements:
 
 - Single-cycle 32-bit RV32I CPU (little-endian).
-- Meaningful subset of RV32I instructions.
+- **Meaningful subset of RV32I instructions (ADDI/ADD/SUB/LW/SW/BEQ/BNE/JAL/JALR/LUI/AUIPC, plus logic and shift ops).**
+- **Extra-credit RV32M multiply/divide block: MUL/DIV/DIVU/REM/REMU, wired through a bit-level numeric core.**
 - Program image loader for `prog.hex`.
 - Trace/logging support for debugging.
 - GitHub repo with feature branches, docs, and tests.
@@ -79,6 +82,7 @@ Root:
     - `mdu.py` — Bit-level multiply/divide unit (shift-add MUL, restoring DIV/DIVU).
     - `shifter.py` — Logical/arithmetic shifters (SLL, SRL, SRA) without `<<`/`>>`.
     - `twos.py` — Two’s-complement helpers (encode/decode, sign/zero-extend).
+    - `internal/` — Internal helpers (not directly used by the CPU).
 
 - `utilities/`
 
@@ -221,71 +225,186 @@ The main CPU implementation lives in `rv32i_440.py` and is exposed via the `Tiny
 
 ## 7. Supported Instruction Set
 
-This implementation supports a **single-cycle subset of RV32I**, plus **RV32M** arithmetic via the bit-level `numeric_core.mdu` unit.
+This implementation covers the **standard CPSC 440 RV32I subset** plus some additional instructions and an **RV32M extra-credit block**.
 
-### 7.1 RV32I arithmetic and logical
+### 7.0 High-level summary
 
-**Register–register (opcode `0x33`, `funct7=0x00`):**
+| Group                      | Instructions                                                    | Notes                                             |
+| -------------------------- | --------------------------------------------------------------- | ------------------------------------------------- |
+| Integer arithmetic / logic | `ADD`, `SUB`, `AND`, `OR`, `XOR`, `ADDI`, `ANDI`, `ORI`, `XORI` | Basic RV32I ALU ops                               |
+| Shifts                     | `SLL`, `SRL`, `SRA`, `SLLI`, `SRLI`, `SRAI`                     | Register and immediate forms, 0–31 shamt          |
+| Memory                     | `LW`, `SW`                                                      | 32-bit word load/store, word-aligned only         |
+| Branch / jump              | `BEQ`, `BNE`, `JAL`, `JALR`                                     | Control flow and function-call primitives         |
+| Upper immediates           | `LUI`, `AUIPC`                                                  | PC-relative and absolute upper-immediate patterns |
+| **RV32M extra credit**     | **`MUL`, `DIV`, `DIVU`, `REM`, `REMU`**                         | **Extra-credit M-extension via bit-level MDU**    |
 
-- `ADD rd, rs1, rs2`
-- `SUB rd, rs1, rs2`
-- `XOR rd, rs1, rs2`
-- `OR  rd, rs1, rs2`
-- `AND rd, rs1, rs2`
+Any other RV32I opcodes (e.g., `SLT/SLTU`, byte/halfword loads/stores, system/CSR ops) are **not implemented** and will log a warning if encountered.
 
-**Immediate (opcode `0x13`):**
+---
 
-- `ADDI rd, rs1, imm` — add sign-extended 12-bit immediate.
-- `XORI rd, rs1, imm`
-- `ORI  rd, rs1, imm`
-- `ANDI rd, rs1, imm`
+### 7.1 RV32I arithmetic and logical (register–register)
 
-### 7.2 Shifts (immediate forms)
+**R-type (opcode `0x33`, `funct7=0x00` unless noted):**
 
-Implemented using the bit-level shifter (`numeric_core.shifter`) via `_shift_helper`:
+- `ADD  rd, rs1, rs2` — integer addition via bit-level ALU (`alu_exec("ADD")`).
+- `SUB  rd, rs1, rs2` — integer subtraction via bit-level ALU (`alu_exec("SUB")`).
+- `AND  rd, rs1, rs2`
+- `OR   rd, rs1, rs2`
+- `XOR  rd, rs1, rs2`
+
+These operations:
+
+- Read `rs1` and `rs2` from the register file.
+- Use the numeric core for `ADD/SUB` (with N/Z/C/V flags logged).
+- Write the masked 32-bit result back to `rd` (unless `rd == 0`).
+
+---
+
+### 7.2 RV32I arithmetic and logical (immediate + shifts)
+
+**I-type arithmetic/bitwise (opcode `0x13`):**
+
+- `ADDI  rd, rs1, imm` — add sign-extended 12-bit immediate.
+- `XORI  rd, rs1, imm`
+- `ORI   rd, rs1, imm`
+- `ANDI  rd, rs1, imm`
+
+**I-type shift immediates (opcode `0x13`, `funct3` = shift, `funct7` distinguishes SRLI/SRAI):**
 
 - `SLLI rd, rs1, shamt` — logical left shift.
 - `SRLI rd, rs1, shamt` — logical right shift.
-- `SRAI rd, rs1, shamt` — arithmetic right shift (sign-extend).
+- `SRAI rd, rs1, shamt` — arithmetic right shift (sign-extended).
 
-(At present, only the immediate shift forms are implemented; the pure R-type `SLL`, `SRL`, `SRA` are not yet wired into the CPU, although the shifter hardware is available.)
+These use the `_shift_helper()` wrapper, which calls the bit-level shifter (`numeric_core.shifter`) so the implementation does not rely on Python `<<`/`>>` for the core math.
 
-### 7.3 Memory
+---
 
-- `LW rd, imm(rs1)` — word load, word-aligned only.
-- `SW rs2, imm(rs1)` — word store, word-aligned only.
+### 7.3 Shifts (register forms)
 
-Unaligned `LW`/`SW` addresses raise a `ValueError`, which is useful for catching bugs during grading.
+In addition to the immediate forms, the CPU implements the register-based (R-type) shift instructions:
 
-### 7.4 Control flow
+- `SLL rd, rs1, rs2` — shift left logical by `rs2 & 0x1F`.
+- `SRL rd, rs1, rs2` — shift right logical by `rs2 & 0x1F`.
+- `SRA rd, rs1, rs2` — shift right arithmetic by `rs2 & 0x1F`.
+
+The shift amount is taken from the low 5 bits of `rs2` and passed into the same `_shift_helper()` path, which uses the bit-level barrel shifter.
+
+---
+
+### 7.4 Memory
+
+- `LW rd, imm(rs1)` — word load.
+
+  - Effective address = `X[rs1] + imm_i(instr)`.
+  - Must be **word-aligned**; unaligned accesses raise `ValueError`.
+  - Loads a 32-bit word from `dmem[addr]` (or returns 0 if the address is unmapped).
+
+- `SW rs2, imm(rs1)` — word store.
+
+  - Effective address = `X[rs1] + imm_s(instr)`.
+  - Must be **word-aligned**; unaligned accesses raise `ValueError`.
+  - Stores `X[rs2]` into `dmem[addr]`.
+
+Only 32-bit word accesses are supported; byte and halfword (B/H) loads/stores are intentionally omitted.
+
+---
+
+### 7.5 Control flow (branches and jumps)
+
+**Branches (opcode `0x63`):**
 
 - `BEQ rs1, rs2, offset` — branch if equal.
-- `JAL rd, offset` — jump and link; used both for normal jumps and as a halt convention (see below).
 
-### 7.5 Upper immediates
+  - Uses `imm_b(instr)` to compute a signed byte offset.
+  - If `X[rs1] == X[rs2]`, then `pc` is updated to `pc + offset`.
 
-- `LUI rd, imm20` — loads upper 20 bits (`imm_u` helper) into `rd`.
+- `BNE rs1, rs2, offset` — branch if not equal.
 
-### 7.6 RV32M (Multiply/Divide)
+  - Similar to `BEQ`, but the condition is `X[rs1] != X[rs2]`.
 
-These are implemented using the **bit-level multiply/divide unit** in `numeric_core.mdu` and a thin adapter `_mdu_exec` in `rv32i_440.py`:
+**Jumps:**
+
+- `JAL rd, offset` (opcode `0x6F`)
+
+  - Writes `pc + 4` into `rd`.
+  - Sets `pc` to `pc + imm_j(instr)`.
+  - `JAL x0, 0` (`0x0000006F`) is treated as the **halt convention** (see 7.7).
+
+- `JALR rd, rs1, offset` (opcode `0x67`, `funct3=0`)
+
+  - Writes `pc + 4` into `rd`.
+  - Target = `(X[rs1] + imm_i(instr)) & ~1` (LSB cleared per RISC-V spec).
+  - Sets `pc` to this aligned target.
+
+These instructions give you both basic branching and function-call-style control flow.
+
+---
+
+### 7.6 Upper immediates
+
+- `LUI   rd, imm20` (opcode `0x37`)
+
+  - Loads the upper 20 bits of `imm_u(instr)` into `rd` (bits [31:12]), with the low 12 bits set to zero.
+
+- `AUIPC rd, imm20` (opcode `0x17`)
+
+  - Adds `imm_u(instr)` to the current `pc` and writes the result to `rd`.
+  - Useful for PC-relative addressing.
+
+---
+
+### 7.7 RV32M multiply/divide (M-extension — **EXTRA CREDIT**)
+
+The following instructions are implemented using the **bit-level multiply/divide unit** in `numeric_core.mdu` and a thin adapter `_mdu_exec()` in `rv32i_440.py`. These go **beyond** the minimal RV32I requirements and are intended as **extra credit for CPSC 440**.
+
+**R-type, `opcode = 0x33`, `funct7 = 0x01`:**
 
 - `MUL  rd, rs1, rs2` — low 32 bits of signed product.
+
+  - Uses classic **shift-add** multiplication in the MDU.
+  - Sets an `overflow` flag if the true signed 64-bit product does not fit in 32 bits.
+
 - `DIV  rd, rs1, rs2` — signed division (truncation toward zero).
+
 - `DIVU rd, rs1, rs2` — unsigned division.
+
 - `REM  rd, rs1, rs2` — signed remainder (same sign as dividend).
+
 - `REMU rd, rs1, rs2` — unsigned remainder.
 
-The MDU handles edge cases matching RISC-V M semantics:
+The MDU handles RISC-V M-extension edge cases:
 
-- Divide by zero: quotient = `0xFFFFFFFF`, remainder = dividend.
-- `INT_MIN / -1` (signed): quotient = `INT_MIN`, remainder = `0`, overflow flag set.
+- Divide by zero:
 
-### 7.7 Halt convention and not-yet-implemented instructions
+  - Quotient = `0xFFFFFFFF`
+  - Remainder = dividend
+  - `div_by_zero` flag set.
+
+- `INT_MIN / -1` (signed):
+
+  - Quotient = `INT_MIN`
+  - Remainder = `0`
+  - `overflow` flag set.
+
+These flags and (optionally) per-step traces are logged to help grading and debugging.
+
+---
+
+### 7.8 Halt convention and unsupported instructions
 
 **Halt convention:**
 
-- `0x0000006F` (`jal x0, 0`) is treated as a **halt**: in `step()`, encountering this instruction causes the CPU to stop and `run()` to return.
+- The word `0x0000006F` (`jal x0, 0`) is treated as **halt**:
+
+  - Architecturally it is just a self-jump, but in this simulator `step()` will stop and cause `run()` to return when this pattern is encountered.
+
+**Unsupported instructions:**
+
+- Any instruction outside the sets listed above (e.g., `SLT/SLTU`, `LB/LH/SB/SH`, `ECALL/EBREAK`, CSR instructions, F/atomics) is **not implemented**.
+- When such an instruction is fetched:
+
+  - The CPU logs a warning with the opcode and `pc`.
+  - It still advances `pc` by 4, but the behavior of the instruction is effectively “no-op” from the ISA perspective (other than the warning).
 
 ---
 
@@ -332,7 +451,7 @@ Conceptually, the datapath consists of:
 - **Shifter**
 
   - `_shift_helper(kind, value, shamt)` calls into `numeric_core.shifter` (`sll_bits`, `srl_bits`, `sra_bits`).
-  - Shift instructions (`SLLI`, `SRLI`, `SRAI`) are executed via this helper; the result is masked back to 32 bits.
+  - Both immediate and register-based shift instructions are executed via this helper; the result is masked back to 32 bits.
 
 - **Multiply/Divide Unit (MDU)**
 
@@ -364,11 +483,13 @@ There is no separate control-unit class; instead, the control logic is implement
 2. **Case analysis on `opcode`**
 
    - `0x13` → I-type arithmetic/logic/shift (ADDI, ANDI, ORI, XORI, SLLI, SRLI, SRAI).
-   - `0x33` → R-type arithmetic/logic, plus M-extension operations.
+   - `0x33` → R-type arithmetic/logic, plus M-extension operations (ADD/SUB/SLL/SRL/SRA/AND/OR/XOR and MUL/DIV/DIVU/REM/REMU).
    - `0x03` → loads (LW).
    - `0x23` → stores (SW).
-   - `0x63` → branches (BEQ).
+   - `0x63` → branches (BEQ/BNE).
    - `0x6F` → jumps (JAL).
+   - `0x67` → register jump (JALR).
+   - `0x17` → PC-relative upper immediate (AUIPC).
    - `0x37` → upper-immediate (LUI).
 
 3. **Instruction-specific actions**
@@ -381,7 +502,7 @@ There is no separate control-unit class; instead, the control logic is implement
 
 4. **PC update and halt**
 
-   - Branches and jumps override `next_pc` using `imm_b()` / `imm_j()`.
+   - Branches and jumps override `next_pc` using `imm_b()` / `imm_j()` or the JALR target.
    - If the instruction word equals `0x0000006F`, `step()` advances `pc` and returns `False` to signal halt.
    - Otherwise, `pc` is set to `next_pc`, `(pc, instr)` is appended to `trace`, and `step()` returns `True`.
 
@@ -396,6 +517,7 @@ A few extra features go beyond the minimal “just works” simulator:
 ### 9.1 Bit-level numeric core (reused from midterm)
 
 - The `midterm_440.numeric_core` package is a reusable “numeric core” from a previous midterm assignment.
+
 - It provides:
 
   - A **ripple-carry ALU** with flags (N, Z, C, V).
@@ -408,7 +530,7 @@ A few extra features go beyond the minimal “just works” simulator:
 
   - `ADD/SUB` go through `alu_exec()` → bit-level ALU.
   - `MUL/DIV/DIVU/REM/REMU` go through `_mdu_exec()` → bit-level MDU.
-  - Shifts (`SLLI/SRLI/SRAI`) go through `_shift_helper()` → bit-level shifter.
+  - Shifts (`SLL/SRL/SRA` and `SLLI/SRLI/SRAI`) go through `_shift_helper()` → bit-level shifter.
 
 This separation makes the CPU easier to reason about and grades the bit-level algorithms independently of the CPU control logic.
 
@@ -579,8 +701,3 @@ This repo follows the course expectations:
   - Reference features (e.g., “Wire MUL/DIV via numeric_core.mdu”).
 
 ---
-
-```
-
-
-```

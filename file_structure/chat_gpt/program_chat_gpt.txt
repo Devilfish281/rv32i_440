@@ -57,7 +57,7 @@ Developer: Developer: # Project Title
 - Only finish when the user's specification and project conventions are fully satisfied.
 
 ********************************
-Check my code for errors and improvements.
+
 
 
 
@@ -1832,6 +1832,48 @@ class TinyCPU:
                     )
                     self.regs_dump("after SUB")
                     handled = True
+                elif funct3 == 0x1 and funct7 == 0x00:
+                    shamt = X(rs2) & 0x1F
+                    self.logger.debug(
+                        "SLL x%d, x%d, x%d (shamt=%d)",
+                        rd,
+                        rs1,
+                        rs2,
+                        shamt,
+                    )
+                    self.regs_dump("before SLL")
+                    res = _shift_helper("SLL", X(rs1), shamt)
+                    WR(res)
+                    self.regs_dump("after SLL")
+                    handled = True
+                elif funct3 == 0x5 and funct7 == 0x00:
+                    shamt = X(rs2) & 0x1F
+                    self.logger.debug(
+                        "SRL x%d, x%d, x%d (shamt=%d)",
+                        rd,
+                        rs1,
+                        rs2,
+                        shamt,
+                    )
+                    self.regs_dump("before SRL")
+                    res = _shift_helper("SRL", X(rs1), shamt)
+                    WR(res)
+                    self.regs_dump("after SRL")
+                    handled = True
+                elif funct3 == 0x5 and funct7 == 0x20:
+                    shamt = X(rs2) & 0x1F
+                    self.logger.debug(
+                        "SRA x%d, x%d, x%d (shamt=%d)",
+                        rd,
+                        rs1,
+                        rs2,
+                        shamt,
+                    )
+                    self.regs_dump("before SRA")
+                    res = _shift_helper("SRA", X(rs1), shamt)
+                    WR(res)
+                    self.regs_dump("after SRA")
+                    handled = True
                 elif funct3 == 0x4 and funct7 == 0x00:
                     self.logger.debug("XOR x%d, x%d, x%d", rd, rs1, rs2)
                     self.regs_dump("before XOR")
@@ -1880,11 +1922,34 @@ class TinyCPU:
                 if X(rs1) == X(rs2):
                     next_pc = u32(self.pc + imm_b(instr))
                 handled = True
+            elif funct3 == 0x1:
+                self.logger.debug("BNE x%d, x%d, offset=%d", rs1, rs2, imm_b(instr))
+                if X(rs1) != X(rs2):
+                    next_pc = u32(self.pc + imm_b(instr))
+                handled = True
 
         elif opcode == 0x6F:
             self.logger.debug("JAL x%d, offset=%d", rd, imm_j(instr))
             WR(self.pc + 4)
             next_pc = u32(self.pc + imm_j(instr))
+            handled = True
+
+        elif opcode == 0x67:
+            if funct3 == 0x0:
+                self.logger.debug("JALR x%d, x%d, offset=%d", rd, rs1, imm_i(instr))
+                self.regs_dump("before JALR")
+                t = self.pc + 4
+                target = u32((X(rs1) + imm_i(instr)) & ~1)
+                WR(t)
+                next_pc = target
+                self.regs_dump("after JALR")
+                handled = True
+
+        elif opcode == 0x17:
+            self.logger.debug("AUIPC x%d, 0x%05X", rd, get_bits(instr, 31, 12))
+            self.regs_dump("before AUIPC")
+            WR(u32(self.pc + imm_u(instr)))
+            self.regs_dump("after AUIPC")
             handled = True
 
         elif opcode == 0x37:
